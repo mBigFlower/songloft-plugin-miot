@@ -1099,15 +1099,10 @@ export class VoiceEngine {
       return null;
     }
 
-    // 立即停止定时器和重置状态，防止后续异步操作期间旧定时器触发
+    // 只清插件自己的切歌定时器，避免搜索期间把旧歌推回去。
+    // 不要在这里 stopPlay：本地/在线都没找到时，小爱自己的播放应继续。
+    // 确认有可播候选后，由 playSongCandidate 再打断音箱。
     pm.prepareForNewPlayback();
-
-    // 打断音箱当前播报（停止播放），不在此处播放 TTS 提示
-    try {
-      await this.minaService.stopPlay(accountId, deviceId);
-    } catch (e) {
-      songloft.log.warn('[VoiceEngine] Failed to interrupt broadcast: ' + String(e));
-    }
 
     const config = await this.configManager.getConfig();
     const hint = this.buildExternalSearchHint(songName, artist);
@@ -1159,8 +1154,8 @@ export class VoiceEngine {
       return playedSong;
     }
 
+    // 不播「未找到歌曲」：这句 TTS 会把小爱正在放的内容盖掉。
     songloft.log.warn(`[VoiceEngine] Song not found or failed to play: ${songName}`);
-    await this.minaService.textToSpeech(accountId, deviceId, `未找到歌曲：${songName}`);
     return null;
   }
 
@@ -1328,8 +1323,8 @@ export class VoiceEngine {
    * 索引），重搜后同一首歌可能被导入两遍。每个 slot 在 settle 时即从 pending 剔除，
    * 循环次数上界 = 任务数，每个候选最多只试一次，不存在循环重试。
    *
-   * 回落时**刻意不再** pm.prepareForNewPlayback() / minaService.stopPlay()：executePlaySong
-   * 进搜索前已经打断过一次，这里重复打断会掐掉上一个候选可能已经开始出声的流。
+   * 回落时不要再 prepareForNewPlayback()。stopPlay 在 playSongCandidate 里、
+   * 即将推流时才做；这个循环里不要再调一次。
    */
   private async executePlaySongParallel(
     songName: string,
@@ -1534,6 +1529,13 @@ export class VoiceEngine {
     accountId: string,
     deviceId: string,
   ): Promise<PlayedSong | null> {
+    // 找到可播候选才打断小爱，然后推本地/在线流。搜不到时本函数不会被调用。
+    try {
+      await this.minaService.stopPlay(accountId, deviceId);
+    } catch (e) {
+      songloft.log.warn('[VoiceEngine] Failed to interrupt broadcast: ' + String(e));
+    }
+
     pm.setAnnounceOnSongChange(true);
 
     switch (candidate.source) {
